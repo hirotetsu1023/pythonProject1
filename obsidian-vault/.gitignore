@@ -1,0 +1,8 @@
+# Obsidianの端末ローカル設定（同期不要なもの）
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache
+.trash/
+
+# OS
+.DS_Store
