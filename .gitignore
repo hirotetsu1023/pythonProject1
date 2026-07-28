@@ -1,6 +1,0 @@
-config.ini
-reminder_sync.log
-__pycache__/
-*.pyc
-.venv/
-venv/
