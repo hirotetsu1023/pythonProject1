@@ -27,7 +27,9 @@ const CONFIG = {
   MODEL: 'claude-opus-5',
   // GAS の UrlFetchApp は 60 秒程度でタイムアウトするため effort は低めに固定
   EFFORT: 'low',
-  MAX_TOKENS: 4000,
+  // claude-opus-5 は思考が既定で有効で、思考と本文が同じ枠を共有する。
+  // 枠が足りないと JSON が途中で切れるため、余裕を持たせておく。
+  MAX_TOKENS: 8000,
 };
 // ================================================================================
 
@@ -53,7 +55,7 @@ function generateDailyNote() {
   const dateStr = fmt_(today, 'yyyy-MM-dd');
   const wd = ['日', '月', '火', '水', '木', '金', '土'][today.getDay()];
 
-  const bridge = readBridge_(today);              // iPhone 由来（予定・リマインダー）
+  const bridge = readBridge_();                   // iPhone 由来（予定・リマインダー）
   const mail = readMail_(today);                  // Gmail の生データ
   const ai = analyze_(dateStr, wd, bridge, mail); // Claude で「ひとこと」と仕分けを生成
 
@@ -77,10 +79,11 @@ function generateDailyNote() {
  *   [REM]
  *   書類提出
  *
- * @param {!Date} date 対象日
+ * 直近2日以内に届いたもののうち、最新の1通を採用する。
+ *
  * @return {{today: !Array<string>, upcoming: !Array<string>, reminders: !Array<string>}}
  */
-function readBridge_(date) {
+function readBridge_() {
   const empty = { today: [], upcoming: [], reminders: [] };
   const query = 'subject:' + CONFIG.BRIDGE_SUBJECT + ' newer_than:2d';
   const threads = GmailApp.search(query, 0, 5);
@@ -240,6 +243,11 @@ function analyze_(dateStr, wd, bridge, mail) {
     Logger.log('Claude が応答を拒否しました');
     return fallback;
   }
+  if (body.stop_reason === 'max_tokens') {
+    // 応答が途中で切れており JSON として読めない。CONFIG.MAX_TOKENS を増やす。
+    Logger.log('応答が max_tokens で打ち切られました（MAX_TOKENS を増やしてください）');
+    return fallback;
+  }
 
   const text = (body.content || []).filter(function (b) { return b.type === 'text'; })
     .map(function (b) { return b.text; }).join('');
@@ -396,7 +404,7 @@ function dedupeDailyNotes() {
 
 /** 疎通確認: ブリッジメールの解析結果をログに出す（Drive には書き込まない）。 */
 function testBridge() {
-  const bridge = readBridge_(new Date());
+  const bridge = readBridge_();
   Logger.log('今日の予定: %s', JSON.stringify(bridge.today));
   Logger.log('明日以降  : %s', JSON.stringify(bridge.upcoming));
   Logger.log('リマインダー: %s', JSON.stringify(bridge.reminders));

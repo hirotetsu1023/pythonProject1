@@ -28,7 +28,11 @@ iOS ショートカット経由でメールとして送り、GAS がそれを読
 
 ### 1. GAS プロジェクトを作る
 
-`script.google.com` で新規プロジェクトを作り、`Code.gs` と `appsscript.json` を貼り付けます。
+`script.google.com` で新規プロジェクトを作り、`Code.gs` を貼り付けます。
+
+`appsscript.json` にはタイムゾーンだけを書いてあり、**OAuth スコープは意図的に列挙していません**。
+Apps Script がコードから自動判定したものを使う方が確実だからです
+（`GmailApp` は手書きの `gmail.readonly` では権限不足になることがあります）。
 
 ### 2. Claude API キーを登録
 
