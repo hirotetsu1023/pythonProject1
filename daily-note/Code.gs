@@ -17,8 +17,16 @@ const CONFIG = {
 
   TIMEZONE: 'Asia/Tokyo',
 
-  // iOS ショートカットが送るブリッジメールの件名マーカー
+  // iOS ショートカットが送るブリッジメールの件名マーカー（リマインダー用）
   BRIDGE_SUBJECT: 'DAILY-BRIDGE',
+
+  // 「明日以降」に何日先まで載せるか
+  UPCOMING_DAYS: 14,
+
+  // 勤務表カレンダー。全スタッフの当番が入っているため、
+  // MY_NAME を含む予定だけに絞り込む。
+  ROSTER_CALENDARS: ['岡崎医療センター'],
+  MY_NAME: '廣川',
 
   // Gmail をさかのぼる件数の上限
   MAIL_MAX_THREADS: 40,
@@ -53,16 +61,86 @@ function setupDailyTrigger() {
 function generateDailyNote() {
   const today = new Date();
   const dateStr = fmt_(today, 'yyyy-MM-dd');
-  const wd = ['日', '月', '火', '水', '木', '金', '土'][today.getDay()];
+  const wd = ['日', '月', '火', '水', '木', '金', '土'][weekdayIndex_(today)];
 
-  const bridge = readBridge_();                   // iPhone 由来（予定・リマインダー）
+  const cal = readCalendar_(today);               // 予定（Google カレンダー）
+  const bridge = readBridge_();                   // リマインダー（iPhone 由来）
   const mail = readMail_(today);                  // Gmail の生データ
-  const ai = analyze_(dateStr, wd, bridge, mail); // Claude で「ひとこと」と仕分けを生成
 
-  const md = buildMarkdown_(dateStr, wd, bridge, ai);
+  // ブリッジ側にも予定が入っていれば足す（iCloud 併用時の保険）
+  const plan = {
+    today: cal.today.concat(bridge.today),
+    upcoming: cal.upcoming.concat(bridge.upcoming),
+    reminders: bridge.reminders,
+  };
+
+  const ai = analyze_(dateStr, wd, plan, mail); // Claude で「ひとこと」と仕分けを生成
+  const md = buildMarkdown_(dateStr, wd, plan, ai);
   const file = saveToDrive_(dateStr + '.md', md);
   Logger.log('出力完了: %s', file.getUrl());
   return file.getUrl();
+}
+
+
+// ===== Google カレンダー ========================================================
+
+/**
+ * 当日の予定と、明日以降の予定を Google カレンダーから集める。
+ *
+ * 勤務表カレンダーは全スタッフ分が入っているので、自分の名前を含む予定だけ残す。
+ *
+ * @param {!Date} date 対象日
+ * @return {{today: !Array<string>, upcoming: !Array<string>}}
+ */
+function readCalendar_(date) {
+  const dayStart = startOfDay_(date);
+  const dayEnd = new Date(dayStart); dayEnd.setDate(dayEnd.getDate() + 1);
+  const upcomingEnd = new Date(dayStart); upcomingEnd.setDate(upcomingEnd.getDate() + 1 + CONFIG.UPCOMING_DAYS);
+
+  const today = [];
+  const upcoming = [];
+
+  CalendarApp.getAllCalendars().forEach(function (cal) {
+    const calName = cal.getName();
+    const isRoster = CONFIG.ROSTER_CALENDARS.indexOf(calName) !== -1;
+
+    cal.getEvents(dayStart, upcomingEnd).forEach(function (ev) {
+      const title = ev.getTitle();
+      // 勤務表は自分の当番だけ拾う
+      if (isRoster && CONFIG.MY_NAME && title.indexOf(CONFIG.MY_NAME) === -1) return;
+
+      const start = ev.getStartTime();
+      if (start < dayEnd) {
+        today.push(formatEvent_(ev, calName, false));
+      } else {
+        upcoming.push(formatEvent_(ev, calName, true));
+      }
+    });
+  });
+
+  return { today: today, upcoming: upcoming };
+}
+
+
+/**
+ * 予定を1行の文字列にする。
+ * @param {!CalendarEvent} ev
+ * @param {string} calName カレンダー名
+ * @param {boolean} withDate 日付を頭に付けるか（明日以降用）
+ * @return {string}
+ */
+function formatEvent_(ev, calName, withDate) {
+  const start = ev.getStartTime();
+  const parts = [];
+
+  if (withDate) {
+    const w = ['日', '月', '火', '水', '木', '金', '土'][weekdayIndex_(start)];
+    parts.push(fmt_(start, 'M/d') + '(' + w + ')');
+  }
+  if (!ev.isAllDayEvent()) parts.push(fmt_(start, 'HH:mm'));
+
+  parts.push(calName + ': ' + ev.getTitle().trim());
+  return parts.join(' ');
 }
 
 
@@ -167,11 +245,11 @@ function readMail_(date) {
  *
  * @param {string} dateStr
  * @param {string} wd 曜日（1文字）
- * @param {!Object} bridge readBridge_ の戻り値
+ * @param {!Object} plan 予定とリマインダーの束
  * @param {!Array<!Object>} mail readMail_ の戻り値
  * @return {{hitokoto: string, actionable: !Array<string>, reference: !Array<string>}}
  */
-function analyze_(dateStr, wd, bridge, mail) {
+function analyze_(dateStr, wd, plan, mail) {
   // AI が使えないときは仕分けを諦め、その日のメールをそのまま参考欄に並べる。
   // 空欄にするより、件名が残っている方が後から見返せる。
   const fallback = {
@@ -221,8 +299,8 @@ function analyze_(dateStr, wd, bridge, mail) {
       role: 'user',
       content:
         '日付: ' + dateStr + '（' + wd + '）\n\n' +
-        '【今日の予定】\n' + (bridge.today.join('\n') || '(なし)') + '\n\n' +
-        '【リマインダー】\n' + (bridge.reminders.join('\n') || '(なし)') + '\n\n' +
+        '【今日の予定】\n' + (plan.today.join('\n') || '(なし)') + '\n\n' +
+        '【リマインダー】\n' + (plan.reminders.join('\n') || '(なし)') + '\n\n' +
         '【今日届いたメール】\n' + JSON.stringify(mail, null, 1),
     }],
   };
@@ -283,7 +361,7 @@ function analyze_(dateStr, wd, bridge, mail) {
  * @param {!Object} ai
  * @return {string}
  */
-function buildMarkdown_(dateStr, wd, bridge, ai) {
+function buildMarkdown_(dateStr, wd, plan, ai) {
   const wdFull = ['日', '月', '火', '水', '木', '金', '土'][
     new Date(dateStr.replace(/-/g, '/')).getDay()
   ] + '曜日';
@@ -300,11 +378,11 @@ function buildMarkdown_(dateStr, wd, bridge, ai) {
   }
 
   L.push('## 📅 今日の予定');
-  pushList_(L, bridge.today, '- ', '- 予定なし');
+  pushList_(L, plan.today, '- ', '- 予定なし');
   L.push('');
 
   L.push('## ✅ タスク / リマインダー');
-  pushList_(L, bridge.reminders, '- [ ] ', '- ');
+  pushList_(L, plan.reminders, '- [ ] ', '- ');
   L.push('');
 
   L.push('### 📨 メールから拾った要対応');
@@ -323,7 +401,7 @@ function buildMarkdown_(dateStr, wd, bridge, ai) {
   L.push('');
 
   L.push('## 🔮 明日以降');
-  pushList_(L, bridge.upcoming, '- ', '- 予定なし');
+  pushList_(L, plan.upcoming, '- ', '- 予定なし');
   L.push('');
 
   L.push('## 🔗 リンク');
@@ -370,6 +448,33 @@ function senderName_(from) {
 /** Date を指定フォーマットの文字列にする。 */
 function fmt_(date, pattern) {
   return Utilities.formatDate(date, CONFIG.TIMEZONE, pattern);
+}
+
+
+/**
+ * CONFIG.TIMEZONE における「その日の 0:00」を返す。
+ *
+ * Date#setHours や Date#getDay はスクリプトのタイムゾーン設定に従うため、
+ * プロジェクトの設定が Asia/Tokyo でないと日付の境界がずれる。
+ * ここで明示的に変換し、設定に依存しないようにする。
+ *
+ * @param {!Date} date
+ * @return {!Date}
+ */
+function startOfDay_(date) {
+  const ymd = fmt_(date, 'yyyy/MM/dd');
+  const offset = fmt_(date, 'Z'); // 例: +0900
+  return new Date(ymd + ' 00:00:00 GMT' + offset);
+}
+
+
+/**
+ * CONFIG.TIMEZONE における曜日番号（0=日 … 6=土）を返す。
+ * @param {!Date} date
+ * @return {number}
+ */
+function weekdayIndex_(date) {
+  return Number(fmt_(date, 'u')) % 7; // 'u' は 1=月 … 7=日
 }
 
 
