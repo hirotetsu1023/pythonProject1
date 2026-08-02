@@ -172,7 +172,15 @@ function readMail_(date) {
  * @return {{hitokoto: string, actionable: !Array<string>, reference: !Array<string>}}
  */
 function analyze_(dateStr, wd, bridge, mail) {
-  const fallback = { hitokoto: '', actionable: [], reference: [] };
+  // AI が使えないときは仕分けを諦め、その日のメールをそのまま参考欄に並べる。
+  // 空欄にするより、件名が残っている方が後から見返せる。
+  const fallback = {
+    hitokoto: '',
+    actionable: [],
+    reference: mail.map(function (m) {
+      return m.subject + '（' + senderName_(m.from) + '）';
+    }),
+  };
 
   const schema = {
     type: 'object',
@@ -284,11 +292,12 @@ function buildMarkdown_(dateStr, wd, bridge, ai) {
   L.push('---', 'date: ' + dateStr, '曜日: ' + wdFull, 'tags: [daily]', '---', '');
   L.push('# ' + dateStr + ' (' + wd + ')', '');
 
-  L.push('> [!info] 今日のひとこと');
-  (ai.hitokoto || '(生成なし)').split(/\r?\n/).forEach(function (line) {
-    L.push('> ' + line);
-  });
-  L.push('');
+  // ひとことが無い（AI 未使用）ときは、見出しごと省く
+  if (ai.hitokoto) {
+    L.push('> [!info] 今日のひとこと');
+    ai.hitokoto.split(/\r?\n/).forEach(function (line) { L.push('> ' + line); });
+    L.push('');
+  }
 
   L.push('## 📅 今日の予定');
   pushList_(L, bridge.today, '- ', '- 予定なし');
@@ -344,6 +353,19 @@ function pushList_(lines, items, prefix, fallback) {
 
 
 // ===== ユーティリティ ============================================================
+
+/**
+ * 'Name <addr@example.com>' から表示名を取り出す。名前が無ければアドレスを返す。
+ * @param {string} from
+ * @return {string}
+ */
+function senderName_(from) {
+  const m = String(from || '').match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
+  if (m && m[1].trim()) return m[1].trim();
+  if (m) return m[2].trim();
+  return String(from || '').trim();
+}
+
 
 /** Date を指定フォーマットの文字列にする。 */
 function fmt_(date, pattern) {
