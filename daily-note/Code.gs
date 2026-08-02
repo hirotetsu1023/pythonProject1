@@ -500,6 +500,84 @@ function saveToDrive_(name, content) {
 }
 
 
+// ===== 取りこぼしの復旧 ==========================================================
+
+/**
+ * 抜けている日のノートをまとめて生成する。
+ *
+ * 予定は Google カレンダー、メールは Gmail から当時のものを復元できる。
+ * リマインダーと iCloud 分は当時のデータが残っていないため復元できない。
+ * 既にあるノートは触らない（上書きしない）。
+ *
+ * @param {string=} fromStr 開始日 'yyyy-MM-dd'。省略時は14日前。
+ * @param {string=} toStr   終了日 'yyyy-MM-dd'。省略時は昨日。
+ */
+function backfillMissingNotes(fromStr, toStr) {
+  const MAX_DAYS = 60; // 実行時間の上限に当たらないよう歯止めをかける
+  const today = startOfDay_(new Date());
+
+  const from = fromStr ? dateInTz_(fromStr) : addDays_(today, -14);
+  const to = toStr ? dateInTz_(toStr) : addDays_(today, -1);
+
+  if (from > to) {
+    Logger.log('開始日が終了日より後です');
+    return;
+  }
+
+  const folder = DriveApp.getFolderById(CONFIG.FOLDER_ID);
+  let created = 0;
+  let skipped = 0;
+  let day = from;
+
+  for (let i = 0; i <= MAX_DAYS && day <= to; i++, day = addDays_(day, 1)) {
+    const dateStr = fmt_(day, 'yyyy-MM-dd');
+    const name = dateStr + '.md';
+
+    if (folder.getFilesByName(name).hasNext()) {
+      skipped++;
+      continue;
+    }
+
+    const wd = ['日', '月', '火', '水', '木', '金', '土'][weekdayIndex_(day)];
+    const cal = readCalendar_(day);
+    const mail = readMail_(day);
+    const plan = { today: cal.today, upcoming: cal.upcoming, reminders: [] };
+    const ai = analyze_(dateStr, wd, plan, mail);
+
+    folder.createFile(Utilities.newBlob(
+      buildMarkdown_(dateStr, wd, plan, ai), 'text/markdown', name));
+    Logger.log('%s を生成（予定 %s件 / メール %s件）', name, cal.today.length, mail.length);
+    created++;
+  }
+
+  Logger.log('生成 %s件 / 既存のためスキップ %s件', created, skipped);
+}
+
+
+/**
+ * 'yyyy-MM-dd' を CONFIG.TIMEZONE のその日の 0:00 として解釈する。
+ * @param {string} dateStr
+ * @return {!Date}
+ */
+function dateInTz_(dateStr) {
+  const offset = fmt_(new Date(), 'Z');
+  return new Date(dateStr.replace(/-/g, '/') + ' 00:00:00 GMT' + offset);
+}
+
+
+/**
+ * 日数を足した Date を返す（元の Date は変更しない）。
+ * @param {!Date} date
+ * @param {number} days
+ * @return {!Date}
+ */
+function addDays_(date, days) {
+  const d = new Date(date.getTime());
+  d.setDate(d.getDate() + days);
+  return d;
+}
+
+
 // ===== メンテナンス ==============================================================
 
 /**
